@@ -1,0 +1,7 @@
+[Unit]
+Description=Smart Trash Can Cleanup
+
+[Service]
+Type=oneshot
+Environment=TRASH_MAX_AGE_DAYS=7
+ExecStart=%h/.local/bin/srm-empty

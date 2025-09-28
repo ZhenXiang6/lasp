@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 關掉可能殘留的 printf alias（非互動下通常不會有，但保險起見）
+unalias printf 2>/dev/null || true
+
+# 確保 sudo 時仍用呼叫者的家目錄
+if [[ -n "${SUDO_USER:-}" && "${HOME}" = "/root" ]]; then
+  TRASH_HOME="$(eval echo "~${SUDO_USER}")"
+else
+  TRASH_HOME="${HOME}"
+fi
+TRASH_DIR="${TRASH_HOME}/.trash"
+FILES_DIR="${TRASH_DIR}/files"
+META_DIR="${TRASH_DIR}/meta"
+
+# 找到真正的可執行 printf（避免 shell 內建或 alias）
+PRINTF_BIN="$(command -v printf || true)"
+if [[ -z "${PRINTF_BIN:-}" ]]; then
+  echo "Error: cannot find printf" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+metas=( "${META_DIR}"/*.meta.csv )
+if (( ${#metas[@]} == 0 )); then
+  echo "Trash is empty."
+  exit 0
+fi
+
+declare -a rows
+
+# 用 heredoc 印標頭，避開 printf 行為差異
+cat <<'HDR'
+Index | Deleted ISO8601           | Size     | Type | Key                         | Original Path
+------+---------------------------+----------+------+----------------------------+------------------------------
+HDR
+
+idx=0
+for meta in "${metas[@]}"; do
+  key="$(basename -- "$meta" .meta.csv)"
+  IFS=, read -r base_path ts size_bytes < "$meta"
+
+  # 從 tar 內容第一條判斷是檔或目錄
+  first_entry="$(
+    tar -tzf "${FILES_DIR}/${key}.tar.gz" 2>/dev/null | head -n1 || true
+  )"
+  if [[ "$first_entry" == */ ]]; then type="DIR"; else type="FILE"; fi
+
+  # 明確用可執行檔來 printf（不是內建/alias）
+  "${PRINTF_BIN}" "%-5d | %-25s | %-8s | %-4s | %-26s | %s\n" \
+    "$idx" "$ts" "$size_bytes" "$type" "$key" "$base_path"
+
+  rows[idx]="${key}|${base_path}"
+  idx=$((idx+1))
+done
+
+read -rp "Enter Index to restore: " pick
+[[ "$pick" =~ ^[0-9]+$ ]] || { echo "Invalid index"; exit 1; }
+[[ -n "${rows[$pick]:-}" ]] || { echo "Index out of range"; exit 1; }
+
+key="${rows[$pick]%%|*}"
+orig="${rows[$pick]#*|}"
+restore_dir="$(dirname -- "$orig")"
+restore_name="$(basename -- "$orig")"
+dest="${restore_dir}/${restore_name}"
+mkdir -p -- "$restore_dir"
+
+if [[ -e "$dest" ]]; then
+  dest="${dest}.restored.$(date +%Y%m%d-%H:%M)"
+  echo "Original exists; restoring to: $dest"
+fi
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+tar -xzf "${FILES_DIR}/${key}.tar.gz" -C "$tmpdir"
+top="$(ls -A "$tmpdir")"
+mv -- "$tmpdir/$top" "$dest"
+echo "Restored to: $dest"

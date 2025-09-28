@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${SUDO_USER:-}" && "${HOME}" = "/root" ]]; then
+  TRASH_HOME="$(eval echo "~${SUDO_USER}")"
+else
+  TRASH_HOME="${HOME}"
+fi
+TRASH_DIR="${TRASH_HOME}/.trash"
+FILES_DIR="${TRASH_DIR}/files"
+META_DIR="${TRASH_DIR}/meta"
+
+MAX_DAYS="${TRASH_MAX_AGE_DAYS:-7}"
+purged=0
+now="$(date +%s)"
+shopt -s nullglob
+
+for meta in "${META_DIR}"/*.meta.csv; do
+  key="$(basename -- "$meta" .meta.csv)"
+  IFS=, read -r _path ts _size < "$meta"
+  if ! ts_epoch="$(date -d "$ts" +%s 2>/dev/null)"; then
+    echo "Warning: skip unparsable timestamp in ${meta}: ${ts}" >&2
+    continue
+  fi
+  age_days=$(( (now - ts_epoch) / 86400 ))
+  if (( age_days > MAX_DAYS )); then
+    rm -f -- "${FILES_DIR}/${key}.tar.gz" "$meta" && purged=$((purged+1))
+  fi
+done
+
+echo "Purged ${purged} item(s) older than ${MAX_DAYS} day(s)."

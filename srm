@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# sudo 時仍丟到呼叫者家目錄
+if [[ -n "${SUDO_USER:-}" && "${HOME}" = "/root" ]]; then
+  TRASH_HOME="$(eval echo "~${SUDO_USER}")"
+else
+  TRASH_HOME="${HOME}"
+fi
+
+TRASH_DIR="${TRASH_HOME}/.trash"
+FILES_DIR="${TRASH_DIR}/files"
+META_DIR="${TRASH_DIR}/meta"
+mkdir -p "$FILES_DIR" "$META_DIR"
+
+usage() { echo "Usage: srm [-r] <path...>"; exit 1; }
+
+recursive=false
+while getopts ":r" opt; do
+  case "$opt" in
+    r) recursive=true ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND-1))
+[[ $# -ge 1 ]] || usage
+
+for target in "$@"; do
+  if [[ ! -e "$target" ]]; then
+    echo "srm: cannot remove '$target': No such file" >&2
+    continue
+  fi
+  if [[ -d "$target" && $recursive == false ]]; then
+    echo "srm: cannot remove '$target', is a directory (use -r to trash recursively)" >&2
+    continue
+  fi
+
+  base="$(basename -- "$target")"
+  date_str="$(date +%F)"  # YYYY-MM-DD
+  pid="$$"
+  counter=0
+  while :; do
+    key="${base}.${date_str}.${pid}.${counter}"
+    if [[ ! -e "${FILES_DIR}/${key}.tar.gz" && ! -e "${META_DIR}/${key}.meta.csv" ]]; then
+      break
+    fi
+    counter=$((counter+1))
+  done
+
+  size_bytes="$(du -sb -- "$target" | cut -f1)"
+  ts="$(date --iso-8601=seconds)"
+
+  printf '%s,%s,%s\n' "$target" "$ts" "$size_bytes" > "${META_DIR}/${key}.meta.csv"
+  tar -czf "${FILES_DIR}/${key}.tar.gz" -C "$(dirname -- "$target")" "$base"
+  rm -rf -- "$target"
+  echo "Trashed: $target"
+done
